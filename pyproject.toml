@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "YunoHost's QNAp one-touch-copy"
+dynamic = ["version"]
+description = "QNAp'S one-touch-copy implementation for Yunohost"
+readme = "README.md"
+license = { file = "LICENSE" }
+
+authors = [
+    { name = "Christophe Henry", email = "contact@c-henry.fr" }
+]
+
+classifiers = [
+]
+
+requires-python = ">= 3.11"
+
+dependencies = [
+    "fastapi~=0.115.8",
+    "evdev~=1.9.1",
+    "jinja2~=3.1.5",
+    "python-multipart==0.0.20",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pre-commit",
+    "build",
+    "setuptools",
+    "twine",
+    "ruff",
+]
+
+[project.urls]
+Homepage = ""
+Documentation = ""
+Repository = ""
+Issues = ""
+
+[tool.setuptools.dynamic]
+version = { attr = "src.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["src"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ruff.lint.isort]
+force-sort-within-sections = true
+section-order = [
+    "future",
+    "standard-library",
+    "fastapi",
+    "first-party",
+    "third-party",
+    "local-folder",
+]
+
+[tool.ruff.lint.isort.sections]
+"fastapi" = ["fastapi"]
