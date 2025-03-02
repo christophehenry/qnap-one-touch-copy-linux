@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import os.path
-import signal
 import sys
 from contextlib import AbstractAsyncContextManager
 from logging import getLogger
@@ -10,8 +9,15 @@ from typing import Any, Coroutine
 
 from evdev import list_devices as list_evdev, ecodes, InputDevice
 from sdbus import DbusObjectManagerInterfaceAsync, sd_bus_open_system
+from sdbus.dbus_proxy_async_interface_base import DbusInterfaceBaseAsync
 
-from src.udisks2_interfaces import Filesystem
+from src.udisks2_interfaces import Filesystem, Block, PartitionBlock
+from src.utils import (
+    parse_get_managed_objects,
+    await_sig,
+    parse_interfaces_added,
+    parse_interfaces_removed,
+)
 
 KERNEL_MODULE_NAME = "qnap8528"
 DEST = "/home/yunohost.multimedia/share/Dump"
@@ -27,18 +33,6 @@ logger.setLevel(logging.DEBUG)
 logger.addHandler(logging.StreamHandler(sys.stdout))
 
 
-async def await_sig():
-    def handler(signum):
-        if not future.done():
-            future.set_result(signum)
-
-    loop = asyncio.get_event_loop()
-    future = loop.create_future()
-    loop.add_signal_handler(signal.SIGINT, handler, signal.SIGINT)
-    loop.add_signal_handler(signal.SIGTERM, handler, signal.SIGTERM)
-    await future
-
-
 class Udisks2Manager(AbstractAsyncContextManager):
     @property
     async def filesystems(self) -> list[Filesystem] | None:
@@ -48,7 +42,7 @@ class Udisks2Manager(AbstractAsyncContextManager):
                 if not self._found_drive
                 else [
                     Filesystem.new_proxy("org.freedesktop.UDisks2", it, self._bus)
-                    for it in self._found_drive["Partitions"]
+                    for it in self._found_drive["partitions"]
                 ]
             )
 
@@ -77,68 +71,55 @@ class Udisks2Manager(AbstractAsyncContextManager):
     async def _listen_interfaces_added(self):
         async for object_path, interfaces_and_properties in self._object_manager.interfaces_added:
             async with self._lock:
-                self._populate_known_objects(object_path, interfaces_and_properties)
+                _, iface, properties = parse_interfaces_added(interfaces_and_properties)
+                if iface is not None:
+                    self._populate_known_objects(object_path, iface, properties)
 
     async def _listen_interfaces_removed(self):
         async for object_path, interfaces_and_properties in self._object_manager.interfaces_removed:
             async with self._lock:
-                if BLOCK_IFACE not in interfaces_and_properties:
+                _, iface = parse_interfaces_removed(interfaces_and_properties)
+
+                if not issubclass(iface, Block):
                     return
 
-                dev_path = (
-                    interfaces_and_properties[BLOCK_IFACE]["Device"].decode().removesuffix("\x00")
-                )
-                if self._match_disk(interfaces_and_properties):
+                if self._found_drive["_object_path"] == object_path:
                     self._found_drive = None
-                    logger.info(f"Matching device {dev_path} was removed; clearing…")
-                elif FILESYSTEM_IFACE in interfaces_and_properties:
+                else:
                     self._filesystems.pop(object_path, None)
-                    logger.info(f"Removed filesystem {dev_path}")
 
     async def _get_managed_objects(self):
         async with self._lock:
-            objects = await self._object_manager.get_managed_objects()
-            for object_path, interfaces_and_properties in objects.items():
-                self._populate_known_objects(object_path, interfaces_and_properties)
+            objs = parse_get_managed_objects(await self._object_manager.get_managed_objects())
+            for object_path, (iface, props) in objs.items():
+                if iface is not None:
+                    self._populate_known_objects(object_path, iface, props)
 
     def _populate_known_objects(
-        self, object_path: str, interfaces_and_properties: dict[str, dict[str, tuple[str, Any]]]
+        self, object_path: str, iface: DbusInterfaceBaseAsync, properties: dict[str, Any]
     ):
-        if BLOCK_IFACE not in interfaces_and_properties:
+        found_drive = self._match_disk(properties)
+
+        if not found_drive and iface is not Filesystem:
             return
 
-        found_drive = self._match_disk(interfaces_and_properties)
-
-        if not found_drive and FILESYSTEM_IFACE not in interfaces_and_properties:
-            return
-
-        props: dict[str, Any] = {}
-        for iface_name, iface_dict in interfaces_and_properties.items():
-            props.setdefault("_interfaces", set())
-            props["_interfaces"].add(iface_name)
-            props["_object_path"] = object_path
-            props.update({k: v for k, (_, v) in iface_dict.items()})
-
-        dev_path = props["Device"].decode().removesuffix("\x00")
+        dev_path = properties["device"].decode().removesuffix("\x00")
+        properties["_object_path"] = object_path
         if found_drive:
-            if not props.get("Partitions", None):
+            if iface is not PartitionBlock:
                 logger.info(
                     f"Found matching drive {dev_path} but it's not partitionned; "
                     f"nothing will be copied"
                 )
                 return
-            self._found_drive = props
+            self._found_drive = properties
             logger.info(f"Found matching drive {dev_path}")
         else:
-            self._filesystems[object_path] = props
+            self._filesystems[object_path] = properties
             logger.info(f"Found filesystem {dev_path}")
 
-    def _match_disk(self, interfaces_and_properties: dict[str, dict[str, tuple[str, Any]]]):
-        symlinks = {
-            it.decode().removesuffix("\x00")
-            for it in interfaces_and_properties.get(BLOCK_IFACE, {}).get("Symlinks", (None, []))[1]
-        }
-
+    def _match_disk(self, properties: dict[str, Any]):
+        symlinks = {it.decode().removesuffix("\x00") for it in properties.get("symlinks", [])}
         return WELL_KNOWN_DEV in symlinks
 
     async def _create_tasks(self, *coros: Coroutine):

@@ -492,4 +492,48 @@ class Block(DbusInterfaceCommonAsync, interface_name="org.freedesktop.UDisks2.Bl
         raise NotImplementedError
 
 
+class PartitionTable(
+    DbusInterfaceCommonAsync, interface_name="org.freedesktop.UDisks2.PartitionTable"
+):
+    @dbus_method_async(
+        input_signature="ttssa{sv}",
+        result_signature="o",
+        result_args_names=("created_partition",),
+        flags=DbusUnprivilegedFlag,
+    )
+    async def create_partition(
+        self, offset: int, size: int, type: str, name: str, options: Dict[str, Tuple[str, Any]]
+    ) -> str:
+        raise NotImplementedError
+
+    @dbus_method_async(
+        input_signature="ttssa{sv}sa{sv}",
+        result_signature="o",
+        result_args_names=("created_partition",),
+        flags=DbusUnprivilegedFlag,
+    )
+    async def create_partition_and_format(
+        self,
+        offset: int,
+        size: int,
+        type: str,
+        name: str,
+        options: Dict[str, Tuple[str, Any]],
+        format_type: str,
+        format_options: Dict[str, Tuple[str, Any]],
+    ) -> str:
+        raise NotImplementedError
+
+    @dbus_property_async(property_signature="ao", flags=DbusPropertyEmitsChangeFlag)
+    def partitions(self) -> List[str]:
+        raise NotImplementedError
+
+    @dbus_property_async(property_signature="s", flags=DbusPropertyEmitsChangeFlag)
+    def type(self) -> str:
+        raise NotImplementedError
+
+
+class PartitionBlock(Block, PartitionTable): ...
+
+
 class Filesystem(Block, FilesystemMixin): ...
