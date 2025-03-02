@@ -1,10 +1,12 @@
 import asyncio
 import logging
+import os.path
+import signal
 import sys
-from asyncio import Task
+from contextlib import AbstractAsyncContextManager
 from logging import getLogger
 from pathlib import Path
-from typing import Any
+from typing import Any, Coroutine
 
 from evdev import list_devices as list_evdev, ecodes, InputDevice
 from sdbus import DbusObjectManagerInterfaceAsync, sd_bus_open_system
@@ -25,7 +27,19 @@ logger.setLevel(logging.DEBUG)
 logger.addHandler(logging.StreamHandler(sys.stdout))
 
 
-class Udisks2Manager:
+async def await_sig():
+    def handler(signum):
+        if not future.done():
+            future.set_result(signum)
+
+    loop = asyncio.get_event_loop()
+    future = loop.create_future()
+    loop.add_signal_handler(signal.SIGINT, handler, signal.SIGINT)
+    loop.add_signal_handler(signal.SIGTERM, handler, signal.SIGTERM)
+    await future
+
+
+class Udisks2Manager(AbstractAsyncContextManager):
     @property
     async def filesystems(self) -> list[Filesystem] | None:
         async with self._lock:
@@ -38,6 +52,16 @@ class Udisks2Manager:
                 ]
             )
 
+    @property
+    def _found_drive(self):
+        return self._m_found_drive
+
+    @_found_drive.setter
+    def _found_drive(self, value):
+        self._m_found_drive = value
+        if not value:
+            self._filesystems.clear()
+
     def __init__(self):
         self._bus = sd_bus_open_system()
         self._object_manager = DbusObjectManagerInterfaceAsync.new_proxy(
@@ -45,10 +69,10 @@ class Udisks2Manager:
         )
 
         self._lock = asyncio.Lock()
-        self._tasks: list[Task] = []
+        self._tasks: set[asyncio.Task] = set()
 
         self._filesystems: dict[str, dict[str, Any]] = {}
-        self._found_drive = None
+        self._m_found_drive: dict[str, Any] | None = None
 
     async def _listen_interfaces_added(self):
         async for object_path, interfaces_and_properties in self._object_manager.interfaces_added:
@@ -66,7 +90,6 @@ class Udisks2Manager:
                 )
                 if self._match_disk(interfaces_and_properties):
                     self._found_drive = None
-                    self._filesystems.clear()
                     logger.info(f"Matching device {dev_path} was removed; clearing…")
                 elif FILESYSTEM_IFACE in interfaces_and_properties:
                     self._filesystems.pop(object_path, None)
@@ -100,7 +123,8 @@ class Udisks2Manager:
         if found_drive:
             if not props.get("Partitions", None):
                 logger.info(
-                    f"Found matching drive {dev_path} but it's not partitionned; nothing will be copied"
+                    f"Found matching drive {dev_path} but it's not partitionned; "
+                    f"nothing will be copied"
                 )
                 return
             self._found_drive = props
@@ -117,33 +141,48 @@ class Udisks2Manager:
 
         return WELL_KNOWN_DEV in symlinks
 
-    async def start(self):
-        await self._get_managed_objects()
-        loop = asyncio.get_event_loop()
-        self._tasks.append(loop.create_task(self._listen_interfaces_added()))
-        self._tasks.append(loop.create_task(self._listen_interfaces_removed()))
+    async def _create_tasks(self, *coros: Coroutine):
+        def done_callback(task: asyncio.Task):
+            self._tasks.discard(task)
+            if task.cancelled():
+                logger.debug("Stopped listening udisk event")
+            elif e := task.exception():
+                logger.error(e)
 
-    async def stop(self):
+        loop = asyncio.get_event_loop()
+        for coro in coros:
+            t = loop.create_task(coro)
+            t.add_done_callback(done_callback)
+            self._tasks.add(t)
+
+    async def __aenter__(self):
+        await self._get_managed_objects()
+        await self._create_tasks(self._listen_interfaces_added(), self._listen_interfaces_removed())
+        return await super().__aenter__()
+
+    async def __aexit__(self, exc_type, exc_value, traceback, /):
+        logger.debug("Stopping listening to udisks events…")
         self._found_drive = None
         for task in self._tasks:
             task.cancel()
-        await asyncio.gather(*self._tasks)
+        await asyncio.gather(*self._tasks, return_exceptions=True)
+        logger.debug("Stopped listening to udisks events")
 
 
-class Service:
+class Service(AbstractAsyncContextManager):
     def __init__(self, device: InputDevice, manager: Udisks2Manager):
         self._device = device
         self._manager = manager
 
         self._lock = asyncio.Lock()
-        self._ongoing_process = None
-        self._listen_task = None
+        self._tasks: set[asyncio.Task] = set()
+        self._listen_task: asyncio.Task | None = None
 
     async def _read_stream(self, stream):
         while line := await stream.readline():
             logger.info(line)
 
-    async def _copy(self, src):
+    async def _copy(self, src, dest):
         return await asyncio.sleep(120)
         # self.ongoing_process = await asyncio.create_subprocess_exec(
         #     "rsync",
@@ -152,7 +191,7 @@ class Service:
         #     "--recursive",
         #     "--update",
         #     src,
-        #     DEST,
+        #     dest,
         #     stdout=asyncio.subprocess.PIPE,
         #     stderr=asyncio.subprocess.PIPE,
         # )
@@ -160,14 +199,31 @@ class Service:
         # await asyncio.gather(self._read_stream(self.ongoing_process.stdout), self._read_stream(self.ongoing_process.stderr))
         # return await self.ongoing_process.wait()
 
-    def _copy_done(self, task: Task):
-        if task.cancelled():
-            logger.info("Copy cancelled")
-        elif e := task.exception():
-            logger.warning("An error happened during the copy", exc_info=e)
-        else:
-            logger.info("Copy done")
-        self._ongoing_process = None
+    async def _create_copy_tasks(self, *sources: str):
+        def done_callback(task: asyncio.Task):
+            self._tasks.discard(task)
+            if task.cancelled():
+                logger.info("Copy cancelled")
+            elif e := task.exception():
+                logger.warning("An error happened during the copy", exc_info=e)
+            else:
+                logger.info("Copy done")
+
+        loop = asyncio.get_event_loop()
+        async with self._lock:
+            for source in sources:
+                dest = Path(DEST) / os.path.basename(source)
+                try:
+                    dest.mkdir(parents=True, exist_ok=True)
+                except OSError as e:
+                    logger.error(f"Unable to create destination directory {dest}", exc_info=e)
+                    continue
+
+                logger.info(f"Starting copy of {source} to {dest}")
+                t = loop.create_task(self._copy(source, dest))
+                t.set_name(f"copy task from {source} to {dest}")
+                t.add_done_callback(done_callback)
+                self._tasks.add(t)
 
     async def _listen_button_evts(self):
         async for event in self._device.async_read_loop():
@@ -175,7 +231,7 @@ class Service:
                 continue
 
             async with self._lock:
-                if self._ongoing_process is not None:
+                if len(self._tasks):
                     logger.info("Copy process already encours")
                     continue
 
@@ -184,6 +240,8 @@ class Service:
                     logger.info("No filesystem found")
                     continue
 
+                mnt_pnts = set()
+
                 for filesystems in filesystems:
                     mnt_pnt = await filesystems.mount_point
                     if not mnt_pnt:
@@ -191,30 +249,29 @@ class Service:
                     if not mnt_pnt:
                         logger.error(f"Couldn't mount filesystem located at {filesystems.device}")
                         continue
+                    mnt_pnts.add(mnt_pnt)
+                await self._create_copy_tasks(*mnt_pnts)
 
-                logger.info("Starting copy")
-
-                self._ongoing_process = asyncio.get_event_loop().create_task(self._copy(mnt_pnt))
-                self._ongoing_process.add_done_callback(self._copy_done)
-
-    async def start(self):
+    async def __aenter__(self):
         loop = asyncio.get_event_loop()
         self._listen_task = loop.create_task(self._listen_button_evts())
+        return await super().__aenter__()
 
-    async def stop(self):
+    async def __aexit__(self, exc_type, exc_value, traceback, /):
         tasks = []
         if self._listen_task:
             self._listen_task.cancel()
             tasks.append(self._listen_task)
 
-        if self._ongoing_process:
-            self._ongoing_process.cancel()
-            tasks.append(self._ongoing_process)
+        async with self._lock:
+            for copy_task in self._tasks:
+                tasks.append(copy_task)
+                logger.info(f"Stopping {copy_task.get_name()}")
 
-        await asyncio.gather(*tasks)
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def main() -> int:
+async def main():
     try:
         device = next(
             device
@@ -230,16 +287,11 @@ async def main() -> int:
 
     logger.info("Service started")
 
-    manager = Udisks2Manager()
-    await manager.start()
-    service = Service(device, manager)
-    await service.start()
+    async with Udisks2Manager() as manager, Service(device, manager):
+        await await_sig()
 
     return 0
 
 
 if __name__ == "__main__":
-    _loop = asyncio.get_event_loop()
-    _loop.run_until_complete(main())
-    _loop.run_forever()
-    raise SystemExit(main())
+    raise SystemExit(asyncio.get_event_loop().run_until_complete(main()))
