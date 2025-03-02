@@ -1,0 +1,1 @@
+SUBSYSTEM=="block", KERNELS=="1-4|2-4", SUBSYSTEMS=="usb", ENV{DEVTYPE}=="disk", SYMLINK+="qnap-one-touch-copy"
