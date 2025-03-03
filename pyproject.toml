@@ -3,9 +3,9 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "YunoHost's QNAp one-touch-copy"
+name = "qnap-one-touch-copy-linux"
 dynamic = ["version"]
-description = "QNAp'S one-touch-copy implementation for Yunohost"
+description = "Qnap's one-touch-copy implementation for Linux"
 readme = "README.md"
 license = { file = "LICENSE" }
 
@@ -14,24 +14,27 @@ authors = [
 ]
 
 classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: System :: Hardware :: Universal Serial Bus (USB) :: Mass Storage",
+
 ]
 
 requires-python = ">= 3.11"
 
 dependencies = [
-    "fastapi~=0.115.8",
     "evdev~=1.9.1",
-    "jinja2~=3.1.5",
-    "python-multipart==0.0.20",
+    "sdbus==0.13.0",
 ]
 
 [project.optional-dependencies]
 dev = [
+    "uv",
     "pre-commit",
-    "build",
-    "setuptools",
-    "twine",
     "ruff",
+    "jinja2>=3,<4"
 ]
 
 [project.urls]
@@ -40,11 +43,14 @@ Documentation = ""
 Repository = ""
 Issues = ""
 
+[project.scripts]
+example = "onetouchcopy.main:main"
+
 [tool.setuptools.dynamic]
-version = { attr = "src.__version__" }
+version = { attr = "onetouchcopy.__version__" }
 
 [tool.setuptools.packages.find]
-include = ["src"]
+include = ["onetouchcopy"]
 
 [tool.ruff]
 line-length = 100
@@ -57,11 +63,7 @@ force-sort-within-sections = true
 section-order = [
     "future",
     "standard-library",
-    "fastapi",
     "first-party",
     "third-party",
     "local-folder",
 ]
-
-[tool.ruff.lint.isort.sections]
-"fastapi" = ["fastapi"]

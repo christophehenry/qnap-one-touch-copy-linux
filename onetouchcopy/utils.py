@@ -1,4 +1,6 @@
 import asyncio
+import enum
+import logging
 import signal
 from unittest.mock import patch
 
@@ -9,12 +11,16 @@ from sdbus.utils import (
     parse_get_managed_objects as sdbus_parse_get_managed_objects,
 )
 
-from src.udisks2_interfaces import Filesystem, Block, PartitionBlock
+from onetouchcopy.udisks2_interfaces import Filesystem, Block, PartitionBlock
 
 FILESYSTEM_IFACE = "org.freedesktop.UDisks2.Filesystem"
 PARTITION_TABLE_IFACE = "org.freedesktop.UDisks2.PartitionTable"
 BLOCK_IFACE = "org.freedesktop.UDisks2.Block"
 INTERFACES = (Filesystem, Block, PartitionBlock)
+
+
+class LogLevels(enum.IntEnum):
+    SERVICE_LIFECYCLE = logging.INFO + 5
 
 
 def _get_class_from_interfaces(_1, interface_names_iter, _2):

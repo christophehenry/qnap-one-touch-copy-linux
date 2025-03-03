@@ -1,26 +1,22 @@
 import asyncio
-import logging
 import os.path
-import sys
 from contextlib import AbstractAsyncContextManager
 from logging import getLogger
 from pathlib import Path
 from typing import Any, Coroutine
 
-from evdev import list_devices as list_evdev, ecodes, InputDevice
+from evdev import ecodes, InputDevice
 from sdbus import DbusObjectManagerInterfaceAsync, sd_bus_open_system
 from sdbus.dbus_proxy_async_interface_base import DbusInterfaceBaseAsync
 
-from src.udisks2_interfaces import Filesystem, Block, PartitionBlock
-from src.utils import (
+from onetouchcopy.udisks2_interfaces import Filesystem, Block, PartitionBlock
+from onetouchcopy.utils import (
     parse_get_managed_objects,
-    await_sig,
     parse_interfaces_added,
     parse_interfaces_removed,
+    LogLevels,
 )
 
-KERNEL_MODULE_NAME = "qnap8528"
-DEST = "/home/yunohost.multimedia/share/Dump"
 WELL_KNOWN_DEV = "/dev/qnap-one-touch-copy"
 
 DRIVE_IFACE = "org.freedesktop.UDisks2.Drive"
@@ -28,9 +24,7 @@ FILESYSTEM_IFACE = "org.freedesktop.UDisks2.Filesystem"
 BLOCK_IFACE = "org.freedesktop.UDisks2.Block"
 
 
-logger = getLogger("YNH one touch copy")
-logger.setLevel(logging.DEBUG)
-logger.addHandler(logging.StreamHandler(sys.stdout))
+logger = getLogger("One touch copy daemon")
 
 
 class Udisks2Manager(AbstractAsyncContextManager):
@@ -107,7 +101,7 @@ class Udisks2Manager(AbstractAsyncContextManager):
         properties["_object_path"] = object_path
         if found_drive:
             if iface is not PartitionBlock:
-                logger.info(
+                logger.warning(
                     f"Found matching drive {dev_path} but it's not partitionned; "
                     f"nothing will be copied"
                 )
@@ -116,7 +110,7 @@ class Udisks2Manager(AbstractAsyncContextManager):
             logger.info(f"Found matching drive {dev_path}")
         else:
             self._filesystems[object_path] = properties
-            logger.info(f"Found filesystem {dev_path}")
+            logger.debug(f"Found filesystem {dev_path}")
 
     def _match_disk(self, properties: dict[str, Any]):
         symlinks = {it.decode().removesuffix("\x00") for it in properties.get("symlinks", [])}
@@ -151,9 +145,10 @@ class Udisks2Manager(AbstractAsyncContextManager):
 
 
 class Service(AbstractAsyncContextManager):
-    def __init__(self, device: InputDevice, manager: Udisks2Manager):
+    def __init__(self, device: InputDevice, manager: Udisks2Manager, dest: Path):
         self._device = device
         self._manager = manager
+        self._dest = dest
 
         self._lock = asyncio.Lock()
         self._tasks: set[asyncio.Task] = set()
@@ -171,7 +166,7 @@ class Service(AbstractAsyncContextManager):
         #     "--compress",
         #     "--recursive",
         #     "--update",
-        #     src,
+        #     onetouchcopy,
         #     dest,
         #     stdout=asyncio.subprocess.PIPE,
         #     stderr=asyncio.subprocess.PIPE,
@@ -184,23 +179,23 @@ class Service(AbstractAsyncContextManager):
         def done_callback(task: asyncio.Task):
             self._tasks.discard(task)
             if task.cancelled():
-                logger.info("Copy cancelled")
+                logger.log(LogLevels.SERVICE_LIFECYCLE, "Copy cancelled")
             elif e := task.exception():
                 logger.warning("An error happened during the copy", exc_info=e)
             else:
-                logger.info("Copy done")
+                logger.log(LogLevels.SERVICE_LIFECYCLE, "Copy done")
 
         loop = asyncio.get_event_loop()
         async with self._lock:
             for source in sources:
-                dest = Path(DEST) / os.path.basename(source)
+                dest = Path(self._dest) / os.path.basename(source)
                 try:
                     dest.mkdir(parents=True, exist_ok=True)
                 except OSError as e:
                     logger.error(f"Unable to create destination directory {dest}", exc_info=e)
                     continue
 
-                logger.info(f"Starting copy of {source} to {dest}")
+                logger.log(LogLevels.SERVICE_LIFECYCLE, f"Starting copy of {source} to {dest}")
                 t = loop.create_task(self._copy(source, dest))
                 t.set_name(f"copy task from {source} to {dest}")
                 t.add_done_callback(done_callback)
@@ -213,7 +208,7 @@ class Service(AbstractAsyncContextManager):
 
             async with self._lock:
                 if len(self._tasks):
-                    logger.info("Copy process already encours")
+                    logger.warning("Copy process already encours; ignoring input…")
                     continue
 
                 filesystems = await self._manager.filesystems
@@ -236,6 +231,7 @@ class Service(AbstractAsyncContextManager):
     async def __aenter__(self):
         loop = asyncio.get_event_loop()
         self._listen_task = loop.create_task(self._listen_button_evts())
+        logger.log(LogLevels.SERVICE_LIFECYCLE, "Service started")
         return await super().__aenter__()
 
     async def __aexit__(self, exc_type, exc_value, traceback, /):
@@ -250,29 +246,3 @@ class Service(AbstractAsyncContextManager):
                 logger.info(f"Stopping {copy_task.get_name()}")
 
             await asyncio.gather(*tasks, return_exceptions=True)
-
-
-async def main():
-    try:
-        device = next(
-            device
-            for path in list_evdev()
-            if (device := InputDevice(path)).name == KERNEL_MODULE_NAME
-        )
-    except StopIteration:
-        logger.error(f"Firmware {KERNEL_MODULE_NAME} couldn't be found on the device")
-        return 1
-
-    path = Path(DEST)
-    path.mkdir(0o777, exist_ok=True)
-
-    logger.info("Service started")
-
-    async with Udisks2Manager() as manager, Service(device, manager):
-        await await_sig()
-
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(asyncio.get_event_loop().run_until_complete(main()))
