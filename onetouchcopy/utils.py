@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import enum
 import logging
 import signal
@@ -19,6 +20,38 @@ BLOCK_IFACE = "org.freedesktop.UDisks2.Block"
 INTERFACES = (Filesystem, Block, PartitionBlock)
 
 
+class Led:
+    def __init__(self, name: str, logger: logging.Logger):
+        self._name = name
+        self._logger = logger
+
+    def on(self):
+        self._write("trigger", "none")
+        self._write("brightness", "1")
+
+    def off(self):
+        self._write("trigger", "none")
+        self._write("brightness", "0")
+
+    @contextlib.contextmanager
+    def blink(self):
+        self._write("trigger", "timer")
+        self._write("brightness", "1")
+        self._write("delay_on", "200")
+        self._write("delay_off", "200")
+        yield
+        self.on()
+
+    def _write(self, filename: str, content: str):
+        file = f"/sys/class/leds/qnap8528::{self._name}/{filename}"
+        try:
+            with open(file, "w") as f:
+                f.write(content)
+                self._logger.debug(f"Written {content} to {file}")
+        except OSError:
+            self._logger.debug(f"Can't write to {file}")
+
+
 class LogLevels(enum.IntEnum):
     SERVICE_LIFECYCLE = logging.INFO + 5
 
@@ -33,16 +66,18 @@ def _get_class_from_interfaces(_1, interface_names_iter, _2):
     return None
 
 
-def parse_interfaces_added(interfaces_added_data):
+def parse_interfaces_added(path, interfaces_added_data):
     with patch(f"{parse.__name__}._get_class_from_interfaces") as f:
         f.side_effect = _get_class_from_interfaces
-        return sdbus_parse_interfaces_added(INTERFACES, interfaces_added_data, "none", "ignore")
+        return sdbus_parse_interfaces_added(
+            INTERFACES, (path, interfaces_added_data), "none", "ignore"
+        )
 
 
-def parse_interfaces_removed(interfaces_removed_data):
+def parse_interfaces_removed(path, interfaces_removed_data):
     with patch(f"{parse.__name__}._get_class_from_interfaces") as f:
         f.side_effect = _get_class_from_interfaces
-        return sdbus_parse_interfaces_removed(INTERFACES, interfaces_removed_data, "none")
+        return sdbus_parse_interfaces_removed(INTERFACES, (path, interfaces_removed_data), "none")
 
 
 def parse_get_managed_objects(managed_objects_data):
@@ -60,4 +95,5 @@ async def await_sig():
     future = loop.create_future()
     loop.add_signal_handler(signal.SIGINT, handler, signal.SIGINT)
     loop.add_signal_handler(signal.SIGTERM, handler, signal.SIGTERM)
+    loop.add_signal_handler(signal.SIGHUP, handler, signal.SIGTERM)
     await future
