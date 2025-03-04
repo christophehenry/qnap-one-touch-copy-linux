@@ -1,0 +1,11 @@
+[Unit]
+Description=Qnap's one-touch-copy implementation for Linux
+After=local-fs.target
+
+[Service]
+ExecStart=/usr/share/onetouchcopy/venv/bin/python /usr/share/onetouchcopy/main.py
+Restart=on-failure
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target
