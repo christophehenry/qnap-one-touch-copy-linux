@@ -33,21 +33,19 @@ class Udisks2Manager(AbstractAsyncContextManager):
     @property
     async def filesystems(self) -> list[Filesystem] | None:
         async with self._lock:
-            return (
-                None
-                if not self._found_drive
-                else [
-                    Filesystem.new_proxy("org.freedesktop.UDisks2", it, self._bus)
-                    for it in self._found_drive["partitions"]
-                ]
-            )
+            if not self._found_drive:
+                return None
+            partitions = await self._found_drive.partitions
+            return [
+                Filesystem.new_proxy("org.freedesktop.UDisks2", it, self._bus) for it in partitions
+            ]
 
     @property
-    def _found_drive(self):
+    def _found_drive(self) -> PartitionBlock | None:
         return self._found_drive_value
 
     @_found_drive.setter
-    def _found_drive(self, value):
+    def _found_drive(self, value: PartitionBlock | None):
         self._found_drive_value = value
         if value:
             self._led.on()
@@ -56,7 +54,6 @@ class Udisks2Manager(AbstractAsyncContextManager):
             self._filesystems.clear()
 
     def __init__(self):
-        super().__init__()
         self._bus = sd_bus_open_system()
         self._object_manager = DbusObjectManagerInterfaceAsync.new_proxy(
             "org.freedesktop.UDisks2", "/org/freedesktop/UDisks2", self._bus
@@ -87,9 +84,12 @@ class Udisks2Manager(AbstractAsyncContextManager):
                 if not iface or not issubclass(iface, Block):
                     return
 
-                if self._found_drive["_object_path"] == object_path:
+                if (
+                    isinstance(self._found_drive, DbusInterfaceBaseAsync)
+                    and self._found_drive._dbus.object_path == object_path
+                ):
                     self._found_drive = None
-                else:
+                elif issubclass(iface, Filesystem):
                     self._filesystems.pop(object_path, None)
 
     async def _get_managed_objects(self):
@@ -116,7 +116,9 @@ class Udisks2Manager(AbstractAsyncContextManager):
                     f"nothing will be copied"
                 )
                 return
-            self._found_drive = properties
+            self._found_drive = PartitionBlock.new_proxy(
+                "org.freedesktop.UDisks2", object_path, self._bus
+            )
             logger.info(f"Found matching drive {dev_path}")
         else:
             self._filesystems[object_path] = properties
@@ -226,12 +228,15 @@ class CopyTask:
             )
             group.create_task(copy_task.wait())
             group.create_task(self._process_stdout(copy_task))
+            # Create artificial delay so that the LED blinks to indicate at least something happned
+            group.create_task(asyncio.sleep(1))
 
     async def run(self) -> Exception | None:
         try:
             self.src = self._trailing_slash_regex.sub("", await self._mount())
             logger.log(LogLevels.SERVICE_LIFECYCLE, f"Starting copy{self._log_message}")
             await self._copy_process(self.src, self.dest)
+            logger.log(LogLevels.SERVICE_LIFECYCLE, f"Finished copy{self._log_message}")
         except asyncio.CancelledError:
             logger.info(f"Copy{self._log_message} cancelled")
         except (CopyDestUnwritableError, FilesystemUnmountableError) as e:
@@ -240,7 +245,7 @@ class CopyTask:
             logger.error(f"An unexpected error happened during copy{self._log_message}", exc_info=e)
         finally:
             if not self._already_mounted:
-                dev = await self._filesystem.device
+                dev = (await self._filesystem.device).decode().removesuffix("\x00")
                 try:
                     await self._filesystem.unmount({"auth.no_user_interaction": ("b", True)})
                     logger.log(LogLevels.SERVICE_LIFECYCLE, f"Unmounted {dev}")
