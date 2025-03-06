@@ -8,6 +8,7 @@ from sdbus import (
     DbusUnprivilegedFlag,
     dbus_method_async,
     dbus_property_async,
+    DbusFailedError,
 )
 
 
@@ -537,3 +538,7 @@ class PartitionBlock(Block, PartitionTable): ...
 
 
 class Filesystem(Block, FilesystemMixin): ...
+
+
+class DeviceBusyError(DbusFailedError):
+    dbus_error_name = "org.freedesktop.UDisks2.Error.DeviceBusy"

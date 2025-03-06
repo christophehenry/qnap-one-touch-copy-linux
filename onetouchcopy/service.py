@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os.path
 import re
 import shlex
 from contextlib import AbstractAsyncContextManager
@@ -11,7 +10,7 @@ from evdev import ecodes, InputDevice, KeyEvent
 from sdbus import DbusObjectManagerInterfaceAsync, sd_bus_open_system
 from sdbus.dbus_proxy_async_interface_base import DbusInterfaceBaseAsync
 
-from onetouchcopy.udisks2_interfaces import Filesystem, Block, PartitionBlock
+from onetouchcopy.udisks2_interfaces import Filesystem, Block, PartitionBlock, DeviceBusyError
 from onetouchcopy.utils import (
     parse_get_managed_objects,
     parse_interfaces_added,
@@ -171,16 +170,16 @@ class CopyTask:
     def _log_message(self):
         return f"{' of %s' % self.src if self.src else ''} to {self.dest}"
 
-    def __init__(self, filesystem: Filesystem, dest_root: str):
+    def __init__(self, filesystem: Filesystem, dest: str):
+        self.src = None
+        self.dest = dest
+
         self._filesystem = filesystem
-        self._dest_root = dest_root
         self._progress_value = 0
         self._already_mounted = False
-        self._percent_regex = re.compile("(?P<progress>\d+)%")
+        self._percent_regex = re.compile(r"(?P<progress>\d+)%")
+        self._trailing_slash_regex = re.compile(r"/*$")
         self._task: None | asyncio.Task = None
-
-        self.src = None
-        self.dest = dest_root
 
     async def _mount(self) -> str:
         # Step 1: try mount endpoint
@@ -190,17 +189,9 @@ class CopyTask:
         else:
             mount_point = await self._filesystem.mount({"auth.no_user_interaction": ("b", True)})
             if not mount_point:
-                raise FilesystemUnmountableError(self._filesystem.device)
+                raise FilesystemUnmountableError(await self._filesystem.device)
 
         return mount_point
-
-    async def _create_dest(self, src: str) -> str:
-        dest = Path(self._dest_root) / os.path.basename(src)
-        try:
-            dest.resolve().mkdir(parents=True, exist_ok=True)
-            return f"{dest}"
-        except OSError:
-            raise CopyDestUnwritableError(f"{dest}")
 
     def _parse_line(self, line: str):
         match = self._percent_regex.search(line)
@@ -219,9 +210,12 @@ class CopyTask:
             self._parse_line(e.partial.decode())
 
     async def _copy_process(self, src: str, dest: str):
+        # Removing trailing slashed will create the additionnal directory on dest
+        src = self._trailing_slash_regex.sub("", src)
+        dest = self._trailing_slash_regex.sub("", dest)
         async with asyncio.TaskGroup() as group:
             args = shlex.join(
-                ["--compress", "--recursive", "--update", "--info=progress2", f"{src}", f"{dest}"]
+                ["--compress", "--recursive", "--update", "--info=progress2", src, dest]
             )
             logger.debug(f"Running 'rsync {args}")
             copy_task = await asyncio.create_subprocess_exec(
@@ -235,16 +229,23 @@ class CopyTask:
 
     async def run(self) -> Exception | None:
         try:
-            src = await self._mount()
-            dest = await self._create_dest(src)
+            self.src = self._trailing_slash_regex.sub("", await self._mount())
             logger.log(LogLevels.SERVICE_LIFECYCLE, f"Starting copy{self._log_message}")
-            await self._copy_process(src, dest)
+            await self._copy_process(self.src, self.dest)
         except asyncio.CancelledError:
             logger.info(f"Copy{self._log_message} cancelled")
         except (CopyDestUnwritableError, FilesystemUnmountableError) as e:
             logger.error(f"{e}")
         except Exception as e:
             logger.error(f"An unexpected error happened during copy{self._log_message}", exc_info=e)
+        finally:
+            if not self._already_mounted:
+                dev = await self._filesystem.device
+                try:
+                    await self._filesystem.unmount({"auth.no_user_interaction": ("b", True)})
+                    logger.log(LogLevels.SERVICE_LIFECYCLE, f"Unmounted {dev}")
+                except DeviceBusyError:
+                    logger.warning(f"Can't auto-unmount {dev}: device is busy")
 
 
 class Service(AbstractAsyncContextManager):
