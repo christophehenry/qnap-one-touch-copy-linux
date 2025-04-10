@@ -38,10 +38,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = ""
-Documentation = ""
-Repository = ""
-Issues = ""
+Homepage = "https://github.com/christophehenry/qnap-one-touch-copy-linux"
+Repository = "https://github.com/christophehenry/qnap-one-touch-copy-linux"
+Issues = "https://github.com/christophehenry/qnap-one-touch-copy-linux/issues"
 
 [project.scripts]
 example = "onetouchcopy.main:main"

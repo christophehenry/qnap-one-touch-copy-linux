@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import re
 import shlex
 from contextlib import AbstractAsyncContextManager
@@ -17,6 +16,9 @@ from onetouchcopy.utils import (
     parse_interfaces_removed,
     LogLevels,
     Led,
+    logger,
+    LoggingLock,
+    EnvVars,
 )
 
 WELL_KNOWN_DEV = "/dev/qnap-one-touch-copy"
@@ -24,9 +26,6 @@ WELL_KNOWN_DEV = "/dev/qnap-one-touch-copy"
 DRIVE_IFACE = "org.freedesktop.UDisks2.Drive"
 FILESYSTEM_IFACE = "org.freedesktop.UDisks2.Filesystem"
 BLOCK_IFACE = "org.freedesktop.UDisks2.Block"
-
-
-logger = logging.getLogger("One touch copy daemon")
 
 
 class Udisks2Manager(AbstractAsyncContextManager):
@@ -59,7 +58,7 @@ class Udisks2Manager(AbstractAsyncContextManager):
             "org.freedesktop.UDisks2", "/org/freedesktop/UDisks2", self._bus
         )
 
-        self._lock = asyncio.Lock()
+        self._lock = LoggingLock()
         self._tasks: set[asyncio.Task] = set()
 
         self._filesystems: dict[str, dict[str, Any]] = {}
@@ -212,12 +211,33 @@ class CopyTask:
             self._parse_line(e.partial.decode())
 
     async def _copy_process(self, src: str, dest: str):
+        additionnal_args = []
+        owner = EnvVars.OWNER.env
+        group = EnvVars.GROUP.env
+
+        if group and not owner:
+            logger.warning(
+                f"Environment variable '{EnvVars.GROUP}' is set but not {EnvVars.OWNER}; "
+                f"configuration will be ignored"
+            )
+
+        if owner:
+            additionnal_args.append(f"--chown={owner}:{group if group else ''}")
+
         # Removing trailing slashed will create the additionnal directory on dest
         src = self._trailing_slash_regex.sub("", src)
         dest = self._trailing_slash_regex.sub("", dest)
         async with asyncio.TaskGroup() as group:
             args = shlex.join(
-                ["--compress", "--recursive", "--update", "--info=progress2", src, dest]
+                [
+                    *additionnal_args,
+                    "--compress",
+                    "--recursive",
+                    "--update",
+                    "--info=progress2",
+                    src,
+                    dest,
+                ]
             )
             logger.debug(f"Running 'rsync {args}")
             copy_task = await asyncio.create_subprocess_exec(

@@ -10,10 +10,9 @@ from dotenv import load_dotenv
 from evdev import list_devices as list_evdev, InputDevice
 
 from onetouchcopy.service import Udisks2Manager, Service
-from onetouchcopy.utils import await_sig, LogLevels
+from onetouchcopy.utils import await_sig, LogLevels, EnvVars
 
 KERNEL_MODULE_NAME = "qnap8528"
-DEST_ENV_VAR = "DEST"
 
 
 async def start():
@@ -30,7 +29,7 @@ async def start():
         "--destination",
         help=(
             "Directory were to copy the content of the USB disk; "
-            f"will take priority over {DEST_ENV_VAR} environment variable"
+            f"will take priority over {EnvVars.DEST} environment variable"
         ),
         action="store",
         type=str,
@@ -73,11 +72,11 @@ async def start():
         logger.critical(f"Firmware {KERNEL_MODULE_NAME} couldn't be found on the device")
         return 1
 
-    destination = args.destination or os.getenv(DEST_ENV_VAR)
+    destination = args.destination or EnvVars.DEST.env
 
     if not destination:
         logger.critical(
-            f"Destination path not set. Please use -d option or the {DEST_ENV_VAR} environment "
+            f"Destination path not set. Please use -d option or the {EnvVars.DEST} environment "
             "variable. Use --help for more information."
         )
         return 1

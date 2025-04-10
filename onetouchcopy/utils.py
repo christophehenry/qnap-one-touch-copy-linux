@@ -2,7 +2,9 @@ import asyncio
 import contextlib
 import enum
 import logging
+import os
 import signal
+import sys
 from unittest.mock import patch
 
 from sdbus.utils import (
@@ -14,10 +16,53 @@ from sdbus.utils import (
 
 from onetouchcopy.udisks2_interfaces import Filesystem, Block, PartitionBlock
 
+if sys.version_info >= (3, 11):
+    from enum import property as enum_property
+else:
+    from types import DynamicClassAttribute as enum_property
+
 FILESYSTEM_IFACE = "org.freedesktop.UDisks2.Filesystem"
 PARTITION_TABLE_IFACE = "org.freedesktop.UDisks2.PartitionTable"
 BLOCK_IFACE = "org.freedesktop.UDisks2.Block"
 INTERFACES = (Filesystem, Block, PartitionBlock)
+
+
+logger = logging.getLogger("One touch copy daemon")
+
+
+class LogLevels(enum.IntEnum):
+    SERVICE_LIFECYCLE = logging.INFO + 5
+
+
+class EnvVars(enum.StrEnum):
+    @staticmethod
+    def _generate_next_value_(name, start, count, last_values):
+        return f"OTC_{name}"
+
+    DEST = enum.auto()
+    OWNER = enum.auto()
+    GROUP = enum.auto()
+
+    @enum_property
+    def env(self):
+        return os.getenv(f"{self.value}", None)
+
+
+class LoggingLock(asyncio.Lock):
+    def locked(self):
+        result = super().locked()
+        logger.debug("Locked")
+        return result
+
+    async def acquire(self):
+        logger.debug("Trying to acquire lock")
+        result = await super().acquire()
+        logger.debug("Acquired lock")
+        return result
+
+    def release(self):
+        logger.debug("Releasing lock")
+        super().release()
 
 
 class Led:
@@ -50,10 +95,6 @@ class Led:
                 self._logger.debug(f"Written {content} to {file}")
         except OSError:
             self._logger.debug(f"Can't write to {file}")
-
-
-class LogLevels(enum.IntEnum):
-    SERVICE_LIFECYCLE = logging.INFO + 5
 
 
 def _get_class_from_interfaces(_1, interface_names_iter, _2):
@@ -95,5 +136,4 @@ async def await_sig():
     future = loop.create_future()
     loop.add_signal_handler(signal.SIGINT, handler, signal.SIGINT)
     loop.add_signal_handler(signal.SIGTERM, handler, signal.SIGTERM)
-    loop.add_signal_handler(signal.SIGHUP, handler, signal.SIGTERM)
     await future
