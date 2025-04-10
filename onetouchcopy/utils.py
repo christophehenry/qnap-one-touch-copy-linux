@@ -5,10 +5,8 @@ import logging
 import os
 import signal
 import sys
-from unittest.mock import patch
 
 from sdbus.utils import (
-    parse,
     parse_interfaces_added as sdbus_parse_interfaces_added,
     parse_interfaces_removed as sdbus_parse_interfaces_removed,
     parse_get_managed_objects as sdbus_parse_get_managed_objects,
@@ -97,34 +95,26 @@ class Led:
             self._logger.debug(f"Can't write to {file}")
 
 
-def _get_class_from_interfaces(_1, interface_names_iter, _2):
-    if PARTITION_TABLE_IFACE in interface_names_iter:
-        return PartitionBlock
-    if FILESYSTEM_IFACE in interface_names_iter:
-        return Filesystem
-    elif BLOCK_IFACE in interface_names_iter:
-        return Block
-    return None
-
-
 def parse_interfaces_added(path, interfaces_added_data):
-    with patch(f"{parse.__name__}._get_class_from_interfaces") as f:
-        f.side_effect = _get_class_from_interfaces
-        return sdbus_parse_interfaces_added(
-            INTERFACES, (path, interfaces_added_data), "none", "ignore"
-        )
+    return sdbus_parse_interfaces_added(
+        INTERFACES,
+        (path, interfaces_added_data),
+        "none",
+        "ignore",
+        use_interface_subsets=True,
+    )
 
 
 def parse_interfaces_removed(path, interfaces_removed_data):
-    with patch(f"{parse.__name__}._get_class_from_interfaces") as f:
-        f.side_effect = _get_class_from_interfaces
-        return sdbus_parse_interfaces_removed(INTERFACES, (path, interfaces_removed_data), "none")
+    return sdbus_parse_interfaces_removed(
+        INTERFACES, (path, interfaces_removed_data), "none", use_interface_subsets=True
+    )
 
 
 def parse_get_managed_objects(managed_objects_data):
-    with patch(f"{parse.__name__}._get_class_from_interfaces") as f:
-        f.side_effect = _get_class_from_interfaces
-        return sdbus_parse_get_managed_objects(INTERFACES, managed_objects_data, "none", "ignore")
+    return sdbus_parse_get_managed_objects(
+        INTERFACES, managed_objects_data, "none", "ignore", use_interface_subsets=True
+    )
 
 
 async def await_sig():

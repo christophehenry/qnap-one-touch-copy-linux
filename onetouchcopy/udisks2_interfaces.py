@@ -311,23 +311,33 @@ class FilesystemMixin(
 
 class Block(DbusInterfaceCommonAsync, interface_name="org.freedesktop.UDisks2.Block"):
     @dbus_method_async(
-        input_signature="(sa{sv})a{sv}", result_args_names=(), flags=DbusUnprivilegedFlag
+        input_signature="(sa{sv})a{sv}",
+        result_args_names=(),
+        flags=DbusUnprivilegedFlag,
     )
     async def add_configuration_item(
-        self, item: Tuple[str, Dict[str, Tuple[str, Any]]], options: Dict[str, Tuple[str, Any]]
+        self,
+        item: Tuple[str, Dict[str, Tuple[str, Any]]],
+        options: Dict[str, Tuple[str, Any]],
     ) -> None:
         raise NotImplementedError
 
     @dbus_method_async(
-        input_signature="(sa{sv})a{sv}", result_args_names=(), flags=DbusUnprivilegedFlag
+        input_signature="(sa{sv})a{sv}",
+        result_args_names=(),
+        flags=DbusUnprivilegedFlag,
     )
     async def remove_configuration_item(
-        self, item: Tuple[str, Dict[str, Tuple[str, Any]]], options: Dict[str, Tuple[str, Any]]
+        self,
+        item: Tuple[str, Dict[str, Tuple[str, Any]]],
+        options: Dict[str, Tuple[str, Any]],
     ) -> None:
         raise NotImplementedError
 
     @dbus_method_async(
-        input_signature="(sa{sv})(sa{sv})a{sv}", result_args_names=(), flags=DbusUnprivilegedFlag
+        input_signature="(sa{sv})(sa{sv})a{sv}",
+        result_args_names=(),
+        flags=DbusUnprivilegedFlag,
     )
     async def update_configuration_item(
         self,
@@ -503,7 +513,12 @@ class PartitionTable(
         flags=DbusUnprivilegedFlag,
     )
     async def create_partition(
-        self, offset: int, size: int, type: str, name: str, options: Dict[str, Tuple[str, Any]]
+        self,
+        offset: int,
+        size: int,
+        type: str,
+        name: str,
+        options: Dict[str, Tuple[str, Any]],
     ) -> str:
         raise NotImplementedError
 

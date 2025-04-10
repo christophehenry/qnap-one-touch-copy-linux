@@ -9,7 +9,12 @@ from evdev import ecodes, InputDevice, KeyEvent
 from sdbus import DbusObjectManagerInterfaceAsync, sd_bus_open_system
 from sdbus.dbus_proxy_async_interface_base import DbusInterfaceBaseAsync
 
-from onetouchcopy.udisks2_interfaces import Filesystem, Block, PartitionBlock, DeviceBusyError
+from onetouchcopy.udisks2_interfaces import (
+    Filesystem,
+    Block,
+    PartitionBlock,
+    DeviceBusyError,
+)
 from onetouchcopy.utils import (
     parse_get_managed_objects,
     parse_interfaces_added,
@@ -67,7 +72,10 @@ class Udisks2Manager(AbstractAsyncContextManager):
         self._led = Led("usb", logger)
 
     async def _listen_interfaces_added(self):
-        async for object_path, interfaces_and_properties in self._object_manager.interfaces_added:
+        async for (
+            object_path,
+            interfaces_and_properties,
+        ) in self._object_manager.interfaces_added:
             async with self._lock:
                 _, iface, properties = parse_interfaces_added(
                     object_path, interfaces_and_properties
@@ -76,7 +84,10 @@ class Udisks2Manager(AbstractAsyncContextManager):
                     self._populate_known_objects(object_path, iface, properties)
 
     async def _listen_interfaces_removed(self):
-        async for object_path, interfaces_and_properties in self._object_manager.interfaces_removed:
+        async for (
+            object_path,
+            interfaces_and_properties,
+        ) in self._object_manager.interfaces_removed:
             async with self._lock:
                 _, iface = parse_interfaces_removed(object_path, interfaces_and_properties)
 
@@ -99,7 +110,10 @@ class Udisks2Manager(AbstractAsyncContextManager):
                     self._populate_known_objects(object_path, iface, props)
 
     def _populate_known_objects(
-        self, object_path: str, iface: DbusInterfaceBaseAsync, properties: dict[str, Any]
+        self,
+        object_path: str,
+        iface: DbusInterfaceBaseAsync,
+        properties: dict[str, Any],
     ):
         found_drive = self._match_disk(properties)
 
@@ -262,7 +276,10 @@ class CopyTask:
         except (CopyDestUnwritableError, FilesystemUnmountableError) as e:
             logger.error(f"{e}")
         except Exception as e:
-            logger.error(f"An unexpected error happened during copy{self._log_message}", exc_info=e)
+            logger.error(
+                f"An unexpected error happened during copy{self._log_message}",
+                exc_info=e,
+            )
         finally:
             if not self._already_mounted:
                 dev = (await self._filesystem.device).decode().removesuffix("\x00")

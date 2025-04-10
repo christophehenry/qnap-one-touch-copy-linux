@@ -18,10 +18,12 @@ KERNEL_MODULE_NAME = "qnap8528"
 async def start():
     parser = ArgumentParser(
         prog="Qnap's one touch copy feature for Linux",
-        description=dedent("""
+        description=dedent(
+            """
         Daemon watching Qnap's copy button events to copy the content of any disk plugged into
         that USB port.
-        """),
+        """
+        ),
     )
 
     parser.add_argument(
@@ -36,7 +38,11 @@ async def start():
     )
 
     parser.add_argument(
-        "-c", "--config", help="Configuration file", action="store", default="/etc/onetouchcopy"
+        "-c",
+        "--config",
+        help="Configuration file",
+        action="store",
+        default="/etc/onetouchcopy",
     )
 
     parser.add_argument("--verbose", "-v", action="count", default=0)
