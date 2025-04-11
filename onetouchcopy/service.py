@@ -11,7 +11,6 @@ from sdbus.dbus_proxy_async_interface_base import DbusInterfaceBaseAsync
 
 from onetouchcopy.udisks2_interfaces import (
     Filesystem,
-    Block,
     PartitionBlock,
     DeviceBusyError,
 )
@@ -88,12 +87,12 @@ class Udisks2Manager(AbstractAsyncContextManager):
             object_path,
             interfaces_and_properties,
         ) in self._object_manager.interfaces_removed:
+            _, iface = parse_interfaces_removed(object_path, interfaces_and_properties)
+
+            if not iface:
+                continue
+
             async with self._lock:
-                _, iface = parse_interfaces_removed(object_path, interfaces_and_properties)
-
-                if not iface or not issubclass(iface, Block):
-                    return
-
                 if (
                     isinstance(self._found_drive, DbusInterfaceBaseAsync)
                     and self._found_drive._dbus.object_path == object_path
@@ -196,6 +195,8 @@ class CopyTask:
         self._trailing_slash_regex = re.compile(r"/*$")
         self._task: None | asyncio.Task = None
 
+        self._led = Led("usb", logger)
+
     async def _mount(self) -> str:
         # Step 1: try mount endpoint
         mount_point = await self._filesystem.mount_point
@@ -269,6 +270,7 @@ class CopyTask:
         try:
             self.src = self._trailing_slash_regex.sub("", await self._mount())
             logger.log(LogLevels.SERVICE_LIFECYCLE, f"Starting copy{self._log_message}")
+            self._led.blink()
             await self._copy_process(self.src, self.dest)
             logger.log(LogLevels.SERVICE_LIFECYCLE, f"Finished copy{self._log_message}")
         except asyncio.CancelledError:
@@ -281,6 +283,7 @@ class CopyTask:
                 exc_info=e,
             )
         finally:
+            self._led.on()
             if not self._already_mounted:
                 dev = (await self._filesystem.device).decode().removesuffix("\x00")
                 try:
@@ -300,8 +303,6 @@ class Service(AbstractAsyncContextManager):
         self._listen_task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
 
-        self._led = Led("usb", logger)
-
     def _copy_task_done(self, _):
         self._copy_task = None
 
@@ -311,10 +312,9 @@ class Service(AbstractAsyncContextManager):
             logger.info("No filesystem found")
             return
 
-        with self._led.blink():
-            async with asyncio.TaskGroup() as group:
-                for filesystem in filesystems:
-                    group.create_task(CopyTask(filesystem, f"{self._dest}").run())
+        async with asyncio.TaskGroup() as group:
+            for filesystem in filesystems:
+                group.create_task(CopyTask(filesystem, f"{self._dest}").run())
 
     async def _listen_button_evts(self):
         async for event in self._device.async_read_loop():

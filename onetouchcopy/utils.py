@@ -1,5 +1,4 @@
 import asyncio
-import contextlib
 import enum
 import logging
 import os
@@ -76,14 +75,11 @@ class Led:
         self._write("trigger", "none")
         self._write("brightness", "0")
 
-    @contextlib.contextmanager
     def blink(self):
         self._write("trigger", "timer")
         self._write("brightness", "1")
         self._write("delay_on", "200")
         self._write("delay_off", "200")
-        yield
-        self.on()
 
     def _write(self, filename: str, content: str):
         file = f"/sys/class/leds/qnap8528::{self._name}/{filename}"
